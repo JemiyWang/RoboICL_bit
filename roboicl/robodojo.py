@@ -164,6 +164,27 @@ def main() -> int:
         env.eval_one_episode = types.MethodType(owned_rollout, env)
         stage = "run evaluation"
         env.run_eval()
+        # Persist an explicit attempt boundary after RoboDojo has finalized
+        # success/process-score bookkeeping.  The policy decides whether this
+        # feedback is visible to prompt retrieval; with the default ``none``
+        # protocol it is recorded only as an unknown terminal boundary.
+        if (not args.capture_only
+                and os.environ.get("ROBOICL_MEMORY_MODE", "off") != "off"):
+            result = dict(getattr(env, "eval_result", {}))
+            details = result.get("details", {})
+            if isinstance(details, dict) and details:
+                rows = list(details.values())
+                row = rows[-1] if isinstance(rows[-1], dict) else {}
+            else:
+                row = {}
+            env.model_client.call(
+                "trial_end",
+                obs={
+                    "success": bool(row.get("success", False)),
+                    "score": row.get("score"),
+                    "failure_type": "unknown",
+                },
+            )
         return 0
     except BaseException:
         print(f"RoboICL adapter failed during: {stage}", file=sys.stderr, flush=True)

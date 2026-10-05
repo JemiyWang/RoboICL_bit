@@ -232,6 +232,37 @@ for a one-shot task without a published reference path. A process exit code of
 zero means evaluation completed; task success and progress are reported by the
 native RoboDojo evaluator in the generated `result.json`.
 
+### Optional experimental cross-attempt causal memory
+
+The default `--memory-mode off` preserves the released RoboICL behavior. The
+new memory path is deliberately opt-in and stores executed action-effect
+transitions in JSONL. `shadow` records and retrieves evidence without changing
+the model input; `prompt` additionally injects bounded, session-scoped past
+attempts into the next request.
+
+For repeated fixed-layout attempts, reuse the same memory path and increment
+`--attempt-id`:
+
+```bash
+MEMORY=/tmp/roboicl_insert_key_seed0_layout0.jsonl
+
+"$ROBOICL_POLICY_PYTHON" -m roboicl.run insert_key \
+  --shots 0 --seed 0 --layout 0 --gpu 0 \
+  --profile configs/protocols/zero_shot_b25.json \
+  --memory-mode prompt --memory-feedback episode_outcome \
+  --memory-path "$MEMORY" --attempt-id 0
+
+"$ROBOICL_POLICY_PYTHON" -m roboicl.run insert_key \
+  --shots 0 --seed 0 --layout 0 --gpu 0 \
+  --profile configs/protocols/zero_shot_b25.json \
+  --memory-mode prompt --memory-feedback episode_outcome \
+  --memory-path "$MEMORY" --attempt-id 1
+```
+
+This is an initial research hook, not yet the final SR@K batch runner. Keep
+the task, seed, layout, action protocol, model, and feedback settings fixed
+when comparing attempts.
+
 
 
 ## Repository layout

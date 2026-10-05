@@ -389,6 +389,26 @@ def main():
     ap.add_argument("--port", type=int)
     ap.add_argument("--action-horizon", type=int, default=None, help="Override both prediction and execution steps; few-shot needs matching reference")
     ap.add_argument("--reasoning-effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
+    ap.add_argument(
+        "--memory-mode", choices=["off", "shadow", "prompt"], default="off",
+        help="Optional cross-attempt causal memory; default off preserves the baseline.",
+    )
+    ap.add_argument(
+        "--memory-root", type=Path, default=None,
+        help="Directory for the JSONL causal memory (defaults to results-root/causal_memory).",
+    )
+    ap.add_argument(
+        "--memory-path", type=Path, default=None,
+        help="Explicit JSONL causal memory path.",
+    )
+    ap.add_argument(
+        "--memory-feedback", choices=["none", "episode_outcome"], default="none",
+        help="Whether trial outcome may be used by prompt retrieval; default none.",
+    )
+    ap.add_argument("--attempt-id", type=int, default=0,
+                    help="Attempt number within the selected persistent-memory session.")
+    ap.add_argument("--session-id", default=None,
+                    help="Optional human-readable session label recorded in run metadata.")
     output_group = ap.add_mutually_exclusive_group()
     output_group.add_argument("--max-output-tokens", type=int, default=None)
     output_group.add_argument("--omit-max-output-tokens", action="store_true")
@@ -402,8 +422,12 @@ def main():
 
     if min(args.seed, args.layout, args.gpu) < 0:
         ap.error("seed/layout/gpu must be nonnegative")
+    if args.attempt_id < 0:
+        ap.error("--attempt-id must be nonnegative")
     if args.reference is not None and args.shots == 0:
         ap.error("--reference is only valid with --shots 1")
+    if args.memory_mode != "off" and args.memory_path is not None and args.memory_root is not None:
+        ap.error("specify only one of --memory-path and --memory-root")
 
     data_root = absolute_path(args.data_root)
     results_root = absolute_path(args.results_root)
@@ -451,6 +475,16 @@ def main():
     )
     out = results_root / runid
 
+    memory_path = None
+    if args.memory_mode != "off":
+        if args.memory_path is not None:
+            memory_path = absolute_path(args.memory_path)
+        else:
+            memory_root = absolute_path(args.memory_root) if args.memory_root is not None else results_root / "causal_memory"
+            memory_path = memory_root / (
+                f"{args.task}_seed{args.seed}_layout{args.layout}_{args.variant}.jsonl"
+            )
+
     env = os.environ.copy()
     if profile.get("endpoint") is not None:
         # A selected profile is authoritative. In particular, do not inherit a
@@ -484,6 +518,21 @@ def main():
         PYTHONUNBUFFERED="1",
         OMNI_KIT_ALLOW_ROOT="1",
         CUDA_VISIBLE_DEVICES=str(args.gpu),
+        ROBOICL_MEMORY_MODE=args.memory_mode,
+        ROBOICL_MEMORY_FEEDBACK=args.memory_feedback,
+        ROBOICL_ATTEMPT_ID=str(args.attempt_id),
+        ROBOICL_TASK=args.task,
+        ROBOICL_SEED=str(args.seed),
+        ROBOICL_LAYOUT=str(args.layout),
+        ROBOICL_VARIANT=args.variant,
+        ROBOICL_SESSION_ID=args.session_id or (
+            f"{args.task}:seed={args.seed}:layout={args.layout}:variant={args.variant}"
+        ),
+    )
+    if memory_path is not None:
+        env["ROBOICL_MEMORY_PATH"] = str(memory_path)
+    env["ROBOICL_MEMORY_PROTOCOL_VERSION"] = (
+        f"{profile.get('id', 'profile')}:shots={args.shots}:h={config['predict_horizon']}"
     )
     if args.shots:
         env["ASTRA_DEMO_MANIFEST"] = str(ref / "train_reference_bundle.json")
@@ -559,6 +608,14 @@ def main():
         "source_manifest_sha256": sha(CODE / "RELEASE_MANIFEST.json") if (CODE / "RELEASE_MANIFEST.json").is_file() else None,
         "reference_preflight": preflight_report,
         "asset_preflight": asset_report,
+        "causal_memory": {
+            "mode": args.memory_mode,
+            "feedback": args.memory_feedback,
+            "path": str(memory_path) if memory_path is not None else None,
+            "attempt_id": args.attempt_id,
+            "session_id": env["ROBOICL_SESSION_ID"],
+            "protocol_version": env["ROBOICL_MEMORY_PROTOCOL_VERSION"],
+        },
     }
     if args.dry_run:
         record["upstream"] = verify_submodules()
